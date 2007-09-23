@@ -8,69 +8,154 @@
 //   php domass.php oldcode.php > newcode.php      //
 /////////////////////////////////////////////////////
 
-function replace_calls($calls, $file) {
-	$tokens = token_get_all($file);
-	$newfile = "";
-
-	// get an array of tokens to search for
-	for($i = 0; $i < count($calls); $i++) {
-		$nuggets[$i] = token_get_all('<?php ' . str_replace('$$','_SOME_PARAMETER_', $calls[$i][1]) . '?>');
-		array_shift($nuggets[$i]); array_pop($nuggets[$i]);
+function get_tokens($php_string, $add_php_tags=false) {
+	if($add_php_tags) {
+		if(substr($php_string,0,2) != '<?')
+			$php_string = '<?php ' . $php_string;
+		if(substr($php_string,-2) != '?>')
+			$php_string = $php_string . '?>';
 	}
 
-	// search through the tokenized file for the tokens
-	for($i = 0; $i < count($tokens); $i++) {
-		$txt = is_array($tokens[$i]) ? $tokens[$i][1] : $tokens[$i];
+	$tokens = token_get_all($php_string);
 
-		for($j = 0; $j < count($nuggets); $j++) {
-			$nugget = $nuggets[$j];
+	if($add_php_tags) {
+		array_shift($tokens); array_pop($tokens);
+	}
 
-			// possible match...
-			if($nugget[0][0] == $tokens[$i][0]) {
-				$x = 0;
-				$y = $i;
-				$parms = array();
-				$matched = true;
+	return $tokens;
+}
 
-				while(isset($nugget[$x]) && isset($tokens[$y]) && $matched) {
-					if($tokens[$y][0] == T_WHITESPACE) {
-						$y++;
-					}
-					else if($nugget[$x] == $tokens[$y] || ($nugget[$x][0] == T_VARIABLE && $tokens[$y][0] == T_VARIABLE) || $nugget[$x][1] == "_SOME_PARAMETER_") {
-						if($nugget[$x][0] == T_VARIABLE && $tokens[$y][0] == T_VARIABLE) {
-							$parms[] = $tokens[$y][1];
+function token_text($token) {
+	return is_array($token) ? $token[1] : $token;
+}
+
+function match_token($search, $tokens, $offset=0) {
+	// possible match...
+	if($search[0][0] == $tokens[$offset][0]) {
+		$x = 0;
+		$y = $offset;
+		$matched_tokens = NULL;
+		$variables = array();
+
+		$matched = true;
+
+		while(isset($search[$x]) && isset($tokens[$y]) && $matched) {
+			if($tokens[$y][0] == T_WHITESPACE) {
+				$matched_tokens[$y] = $tokens[$y];
+				$y++;
+			}
+			else if($search[$x] == $tokens[$y] || ($search[$x][0] == T_VARIABLE && $tokens[$y][0] == T_VARIABLE) || $search[$x][1] == "_SOME_PARAMETER_") {
+				if($search[$x][0] == T_VARIABLE && $tokens[$y][0] == T_VARIABLE) {
+					$matched_tokens[$y] = $tokens[$y];
+
+					$v = count($variables);
+					$variables[$v][$y] = $tokens[$y];
+				}
+				else if($search[$x][1] == "_SOME_PARAMETER_") {
+					$opened = 0;
+					$v = count($variables);
+					for($yy = $y; $yy < count($tokens); $yy++) {
+						if(($tokens[$yy] == "," || $tokens[$yy] == ")") && $opened == 0) {
+							$y = $yy-1;
+							break;
 						}
-						else if($nugget[$x][1] == "_SOME_PARAMETER_") {
-							$parms[] = $tokens[$y][1];
+						elseif($tokens[$yy] == "(") {
+							$opened++;
 						}
-						$x++; $y++;
-					}
-					else {
-						$matched = false;
+						elseif($tokens[$yy] == ")") {
+							$opened--;
+						}
+						$matched_tokens[$yy] = $tokens[$yy];
+						$variables[$v][$yy] = $tokens[$yy];
 					}
 				}
-
-				if($matched) {
-					// found a match... yay
-					$i = $y-1;
-
-					$txt = $calls[$j][2];
-
-					if(preg_match_all('/\$(\d+)/', $txt, $parmnums)) {
-						foreach($parmnums[1] as $parmnum) {
-							$txt = str_replace('$'.$parmnum, $parms[$parmnum-1], $txt);
-						}
-					}
+				else {
+					$matched_tokens[$y] = $tokens[$y];
 				}
+
+				$x++; $y++;
+			}
+			else {
+//print "==============================\n";
+//print_r($matched_tokens);
+//print_r($search[$x]);
+//print_r($tokens[$y]);
+				$matched = false;
+				unset($matched_tokens);
+				unset($variables);
 			}
 		}
 
-		$newfile .= $txt;
-		
+		if($matched) {
+			return array($matched_tokens, $variables);
+		}
 	}
 
-	return $newfile;
+	return false;
+}
 
+function replace_tokens($search_tokens, $replace_tokens, $tokens) {
+	$newtokens = array();
+
+	// search through the tokenized file for the tokens
+	for($i = 0; $i < count($tokens); $i++) {
+		$match = NULL;
+		$matchidx = -1;
+
+		for($j = 0; ($j < count($search_tokens) && !$match); $j++) {
+			$match = match_token($search_tokens[$j], $tokens, $i);
+			$matchidx = $j;
+		}
+
+		if($match) {
+			list($matched_tokens, $parms) = $match;
+//print "=================\n";
+//print "tokens: "; print_r($matched_tokens);
+//print "search: "; print_r($search_tokens[$matchidx]);
+//print "replace: "; print_r($replace_tokens[$matchidx]);
+//print "parameter: "; print_r($parms);
+			for($k = 0; $k < count($replace_tokens[$matchidx]); $k++) {
+				if(preg_match("|_VARIABLE_(\d+)_|", token_text($replace_tokens[$matchidx][$k]), $pnum)) {
+					$pnum = $pnum[1]-1;
+					$variable = array_values($parms[$pnum]);
+					if(count($variable) > 1) {
+						$variable = replace_tokens($search_tokens, $replace_tokens, $variable);
+					}
+					$newtokens = array_merge($newtokens, $variable);
+				}
+				else {
+					$newtokens[] = $replace_tokens[$matchidx][$k];
+				}
+			}
+			$i += count($matched_tokens)-1;
+		}
+		else {
+			$newtokens[] = $tokens[$i];
+		}
+	}
+
+	return $newtokens;	
+}
+
+function replace_calls($calls, $file) {
+	$tokens = get_tokens($file);
+
+	// get an array of tokens to search for
+	for($i = 0; $i < count($calls); $i++) {
+		$searches[$i] = get_tokens(str_replace('$$','_SOME_PARAMETER_', $calls[$i][1]), true);
+		$replacements[$i] = get_tokens(preg_replace('|\$(\d+)|','_VARIABLE_\1_', $calls[$i][2]), true);
+	}
+
+	// search through the tokenized file for the tokens
+	$asdf = replace_tokens($searches, $replacements, $tokens);
+
+	$text = "";
+
+	foreach($asdf as $a) {
+		$text .= token_text($a);
+	}
+
+	return $text;
 }
 
 $calls =
@@ -165,14 +250,14 @@ $calls =
 		array(NULL, '$pi->data()', '$1->data'),
 		array(NULL, '$pi->target()', '$1->target'),
 
-		array('$node', '$node->appendChild($node->clone_node())', '$1->appendChild($1->ownerDocument->isSameNode($2->ownerDocument)?$2->cloneNode():$1->ownerDocument->importNode($2))'),
-		array('$node', '$node->appendChild($node->clone_node($$))', '$1->appendChild($1->ownerDocument->isSameNode($2->ownerDocument)?$2->cloneNode($3):$1->ownerDocument->importNode($2,$3))'),
+		//array('$node', '$node->appendChild($node->clone_node())', '$1->appendChild($1->ownerDocument->isSameNode($2->ownerDocument)?$2->cloneNode():$1->ownerDocument->importNode($2))'),
+		//array('$node', '$node->appendChild($node->clone_node($$))', '$1->appendChild($1->ownerDocument->isSameNode($2->ownerDocument)?$2->cloneNode($3):$1->ownerDocument->importNode($2,$3))'),
 	//	array('$obj->$func($obj->clone_node(),$$)', '$1->$2(($1->ownerDocument->isSameNode($3->ownerDocument)?$3->cloneNode():$1->ownerDocument->importNode($3)),$4)'),
 	//	array('$obj->$func($obj->clone_node($$),$$)', '$1->$2(($1->ownerDocument->isSameNode($3->ownerDocument)?$3->cloneNode($4):$1->ownerDocument->importNode($3,$4)),$5)'),
 	//	array('$obj->$func($obj->clone_node())', '$1->$2($1->ownerDocument->isSameNode($3->ownerDocument)?$3->cloneNode():$1->ownerDocument->importNode($3))'),
 	//	array('$obj->$func($obj->clone_node($$))', '$1->$2($1->ownerDocument->isSameNode($3->ownerDocument)?$3->cloneNode($4):$1->ownerDocument->importNode($3,$4))'),
-	//	array('$obj->clone_node()', '$1->cloneNode()'),
-	//	array('$obj->clone_node($$)', '$1->cloneNode($2)'),
+		array('$node', '$obj->clone_node()', '$1->cloneNode()'),
+		array('$node', '$obj->clone_node($$)', '$1->cloneNode($2)'),
 
 
 		array(NULL, 'xpath_init()', '//xpath_init()'),
