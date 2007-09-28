@@ -46,25 +46,38 @@ function match_token($search, $tokens, $offset=0) {
 			}
 			else if($search[$x] == $tokens[$y] || ($search[$x][0] == T_VARIABLE && $tokens[$y][0] == T_VARIABLE) || $search[$x][1] == "_SOME_PARAMETER_") {
 				if($search[$x][0] == T_VARIABLE && $tokens[$y][0] == T_VARIABLE) {
-					$matched_tokens[$y] = $tokens[$y];
-
+					$opened = 0;
 					$v = count($variables);
-					$variables[$v][$y] = $tokens[$y];
+					for($yy = $y; $yy < count($tokens); $yy++) {
+						if($tokens[$yy] == "[")
+							$opened++;
+						elseif($tokens[$yy] == "]")
+							$opened--;
+
+						if($opened == 0 && $tokens[$y] != $tokens[$yy] && $tokens[$yy][0] != T_WHITESPACE && $tokens[$yy] != "[" && $tokens[$yy] != "]") {
+							$y = $yy-1;
+							break;
+						}
+
+						$matched_tokens[$yy] = $tokens[$yy];
+						$variables[$v][$yy] = $tokens[$yy];
+					}
 				}
 				else if($search[$x][1] == "_SOME_PARAMETER_") {
 					$opened = 0;
 					$v = count($variables);
 					for($yy = $y; $yy < count($tokens); $yy++) {
-						if(($tokens[$yy] == "," || $tokens[$yy] == ")") && $opened == 0) {
+						if(($tokens[$yy] == "," || $tokens[$yy] == ")" || $tokens[$yy] == "]") && $opened == 0) {
 							$y = $yy-1;
 							break;
 						}
-						elseif($tokens[$yy] == "(") {
+						elseif($tokens[$yy] == "(" || $tokens[$yy] == "[") {
 							$opened++;
 						}
-						elseif($tokens[$yy] == ")") {
+						elseif($tokens[$yy] == ")" || $tokens[$yy] == "]") {
 							$opened--;
 						}
+						
 						$matched_tokens[$yy] = $tokens[$yy];
 						$variables[$v][$yy] = $tokens[$yy];
 					}
@@ -86,7 +99,7 @@ function match_token($search, $tokens, $offset=0) {
 			}
 		}
 
-		if($matched) {
+		if(!isset($search[$x]) && $matched) {
 			return array($matched_tokens, $variables);
 		}
 	}
@@ -109,17 +122,21 @@ function replace_tokens($search_tokens, $replace_tokens, $tokens) {
 
 		if($match) {
 			list($matched_tokens, $parms) = $match;
-//print "=================\n";
-//print "tokens: "; print_r($matched_tokens);
-//print "search: "; print_r($search_tokens[$matchidx]);
-//print "replace: "; print_r($replace_tokens[$matchidx]);
-//print "parameter: "; print_r($parms);
+/*
+print "=================\n";
+print "tokens: "; print_r($matched_tokens);
+print "search: "; print_r($search_tokens[$matchidx]);
+print "replace: "; print_r($replace_tokens[$matchidx]);
+print "parameter: "; print_r($parms);
+*/
 			for($k = 0; $k < count($replace_tokens[$matchidx]); $k++) {
 				if(preg_match("|_VARIABLE_(\d+)_|", token_text($replace_tokens[$matchidx][$k]), $pnum)) {
 					$pnum = $pnum[1]-1;
-					$variable = array_values($parms[$pnum]);
-					if(count($variable) > 1) {
-						$variable = replace_tokens($search_tokens, $replace_tokens, $variable);
+					if(is_array($parms[$pnum])) {
+						$variable = array_values($parms[$pnum]);
+						if(count($variable) > 1) {
+							$variable = replace_tokens($search_tokens, $replace_tokens, $variable);
+						}
 					}
 					$newtokens = array_merge($newtokens, $variable);
 				}
